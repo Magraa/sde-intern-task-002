@@ -155,3 +155,20 @@ You must understand every line you submit. We check this with your video and in 
 5. Paste the repository link and the video link in the application form.
 
 We will run `pnpm install && pnpm check && pnpm typecheck && pnpm test` on your repository.
+
+---
+
+## Decisions
+
+### 1. Atomic Conditional Updates for Concurrency and Idempotency
+- **Decision:** Implemented payment handling using an atomic single-statement update (`UPDATE shares SET paid_at = ?, idempotency_key = ? WHERE id = ? AND paid_at IS NULL`) followed by an immediate check on `changes === 0`. If another concurrent request already updated the row, a re-query checks whether the existing payment matches the provided `Idempotency-Key` (returning HTTP 200 with the original timestamp) or a different key (returning HTTP 409 Conflict).
+- **Why:** Edge workers on Cloudflare Workers run concurrently in distributed isolates. Relying on an in-memory lock or application-level read-modify-write pattern introduces double-spend vulnerabilities. Pushing synchronization to D1's atomic transactional guarantees prevents race conditions without external distributed lock infrastructure.
+
+### 2. Explicit Sequence (`seq`) Indexing for Member Order Stability
+- **Decision:** Rather than relying solely on wall-clock timestamps (`created_at`) to determine member addition order, each member record stores an explicit integer `seq` sequence number per home.
+- **Why:** Sub-millisecond insertions can yield identical timestamp values in SQLite. Because the assignment rules strictly mandate that remainder cents from uneven division must be allocated sequentially in the exact order members joined, `ORDER BY seq ASC, created_at ASC` ensures 100% deterministic, test-stable behavior.
+
+### 3. Named Schema Constraints and Whole-Cent Financial Modeling
+- **Decision:** Modeled all financial values exclusively as whole positive integers (`amount_cents` and `total_cents`) backed by explicit named constraints (`chk_bills_total_positive`, `chk_shares_amount_positive`, `fk_members_home`, `fk_bills_home`, `fk_shares_bill`, `fk_shares_member`).
+- **Why:** IEEE-754 floating-point arithmetic introduces silent penny errors over repeated fractional divisions. Modeling cents as integer values guarantees zero mathematical drift. Backing these rules with named database constraints prevents orphaned shares and invalid states at the persistence layer even if an upstream API layer were ever bypassed.
+
